@@ -36,23 +36,32 @@ class IntelligentInterruptAgent(Agent):
     def __init__(self) -> None:
         super().__init__(
             instructions="""You are a helpful voice assistant. 
-            When asked a question, give a DETAILED and LONG response (at least 3-4 paragraphs).
-            Speak naturally and take your time explaining things thoroughly.
-            If interrupted, acknowledge it briefly and stop.""",
+            When asked a question, give answer in exactly two lines.
+            Speak naturally.""",
             stt=deepgram.STT(),
             llm=groq.LLM(), 
             tts=cartesia.TTS(),
         )
+        # Track if agent was speaking during user input
+        self._was_speaking_during_input = False
+
+    def set_speaking_context(self, was_speaking: bool):
+        """Called from transcription hook to set speaking context"""
+        self._was_speaking_during_input = was_speaking
 
     async def on_user_turn_completed(
         self, turn_ctx: ChatContext, new_message: ChatMessage
     ) -> None:
         user_text = (new_message.text_content or "").strip()
         
-        if not should_interrupt(user_text):
-            logger.info(f"IGNORING TURN (StopResponse): '{user_text}'")
+        # Only ignore backchannels if agent WAS speaking during input
+        # If agent was NOT speaking, respond to "yeah", "ok", etc.
+        if self._was_speaking_during_input and not should_interrupt(user_text):
+            logger.info(f"IGNORING BACKCHANNEL (was speaking): '{user_text}'")
+            self._was_speaking_during_input = False  # Reset
             raise StopResponse()
         
+        self._was_speaking_during_input = False  # Reset
         logger.info(f"ACCEPTING INPUT: '{user_text}'")
 
 server = AgentServer()
@@ -75,6 +84,7 @@ async def entrypoint(ctx: JobContext):
             return
         
         is_speaking = session.current_speech is not None
+        agent.set_speaking_context(is_speaking)  # Track for on_user_turn_completed
         logger.info(f"FINAL: '{ev.transcript}' | Speaking: {is_speaking}")
         
         if is_speaking:
